@@ -36,10 +36,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Just send me any question about startups, entrepreneurship, "
         "programming, or life advice, and I'll search through PG's essays "
         "to give you an answer.\n\n"
-        "Try asking something like:\n"
-        "• How do I get startup ideas?\n"
-        "• What makes a good programmer?\n"
-        "• How to deal with rejection?\n\n"
         "Go ahead, ask me anything!"
     )
     await update.message.reply_text(welcome_message)

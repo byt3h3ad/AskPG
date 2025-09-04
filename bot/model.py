@@ -9,13 +9,18 @@ from langchain_community.document_loaders import WebBaseLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langgraph.graph import MessagesState, StateGraph
 from langchain_core.tools import tool
+from langchain_core.documents import Document
 from langchain_core.messages import SystemMessage
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.graph import END
 from langgraph.checkpoint.memory import MemorySaver
+import os
+from typing_extensions import List
 
 load_dotenv("../.env")
 
+class State(MessagesState):
+    context: List[Document]
 
 def load_data() -> list[str]:
     file_path = "../data/links.txt"
@@ -35,41 +40,47 @@ def initialize_rag_system():
     llm = init_chat_model("gemini-2.5-flash", model_provider="google_genai")
 
     hf = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-mpnet-base-v2",
+        model_name="sentence-transformers/all-MiniLM-L6-v2",
     )
+
+    persist_dir = "../chroma_langchain_db"
 
     vector_store = Chroma(
         collection_name="PG_essays",
         embedding_function=hf,
-        persist_directory="../chroma_langchain_db",
+        persist_directory=persist_dir,
     )
 
+    if not os.path.exists(persist_dir) or len(vector_store.get().get("ids", [])) == 0:
+        print("No existing vector store found. Creating a new one...")
     # Load and process documents
-    loader = WebBaseLoader(
-        web_paths=load_data(),
-        bs_kwargs=dict(parse_only=bs4.SoupStrainer(["title", "body"])),
-    )
-
-    try:
-        docs = loader.load()
-        for doc in docs:
-            doc.metadata["chunk_source"] = "web scraping"
-            doc.metadata["processing_date"] = str(datetime.now())
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000, chunk_overlap=200
+        loader = WebBaseLoader(
+            web_paths=load_data(),
+            bs_kwargs=dict(parse_only=bs4.SoupStrainer(["title", "body"])),
         )
-        all_splits = text_splitter.split_documents(docs)
-        print(f"Loaded {len(all_splits)} chunks from {len(docs)} documents.")
 
-        # Index chunks
-        vector_store.add_documents(documents=all_splits)
-    except Exception as e:
-        print(f"An error occurred while loading or processing documents: {e}")
+        try:
+            docs = loader.load()
+            for doc in docs:
+                doc.metadata["chunk_source"] = "web scraping"
+                doc.metadata["processing_date"] = str(datetime.now())
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=1000, chunk_overlap=200
+            )
+            all_splits = text_splitter.split_documents(docs)
+            print(f"Loaded {len(all_splits)} chunks from {len(docs)} documents.")
+
+            # Index chunks
+            vector_store.add_documents(documents=all_splits)
+        except Exception as e:
+            print(f"An error occurred while loading or processing documents: {e}")
+    else:
+        print("Existing vector store found. Skipping document loading and indexing.")
 
     @tool(response_format="content_and_artifact")
     def retrieve(query: str):
         """Retrieve information related to a query."""
-        retrieved_docs = vector_store.similarity_search(query, k=5)
+        retrieved_docs = vector_store.similarity_search(query, k=3)
         serialized = "\n\n".join(
             (f"Source: {doc.metadata}\nContent: {doc.page_content}")
             for doc in retrieved_docs
@@ -111,7 +122,11 @@ def initialize_rag_system():
         prompt = [SystemMessage(system_message_content)] + conversation_messages
 
         response = llm.invoke(prompt)
-        return {"messages": [response]}
+
+        context = []
+        for msg in tool_messages:
+            context.extend(msg.artifact)
+        return {"messages": [response], "context": context}
 
     # Build graph
     graph_builder = StateGraph(MessagesState)
